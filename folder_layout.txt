@@ -1,0 +1,14 @@
+dataset/
+  train/
+    controlled/
+      vid001.mp4
+      ...
+    not_controlled/
+      vid101.mp4
+      ...
+  val/
+    controlled/
+    not_controlled/
+  test/                     # optional
+    controlled/
+    not_controlled/
