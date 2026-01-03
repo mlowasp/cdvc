@@ -79,6 +79,36 @@ https://huggingface.co/datasets/mlowasp/controlled-demolition-classification
 
 https://mega.nz/file/7IlxGYrB#qZ6tLZye605grlNBt1F0qLl3I1UIHoM0QtLQkopERLk
 
+## Labels
+
+| Label | Description |
+|------|------------|
+| `controlled` | Engineered, planned building demolition (implosion or sequenced collapse) |
+| `not_controlled` | Unplanned structural collapse (e.g. fire-induced failure, accidental collapse, partial failure) |
+
+Labels are assigned using **public contextual information**, such as news reporting, official demolition footage, or clearly documented demolition events.
+
+---
+
+## Dataset Composition
+
+- **Controlled demolitions:** 30 videos  
+- **Uncontrolled collapses:** 60 videos  
+- **Total videos:** 90  
+
+Videos vary in:
+- duration
+- resolution
+- camera angle
+- environmental conditions
+- collapse dynamics
+
+This diversity is intentional and reflects realistic conditions for video classification models.
+
+## Dataset training results
+
+“On a held-out validation set of 30 videos (10 controlled, 20 uncontrolled), the baseline model achieves F1 scores in the range of 0.83–0.95 depending on epoch and threshold, indicating strong separability but limited by dataset size.”
+
 ---
 
 ## Installation
