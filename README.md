@@ -172,13 +172,20 @@ runs/demolition_cls/
 Run inference on a single video:
 
 ```bash
-python infer.py /path/to/video.mp4 runs/demolition_cls/best.pt
+python infer.py /path/to/video.mp4 runs/demolition_cls/last.pt
 ```
 
 Output:
 ```
 controlled_demolition_probability=0.93
 ```
+
+Training of the latest last.pt and best.py checkpoints have been trained on a custom sized VM:
+
+- NVIDIA RTX A6000 48GB
+- 8 vCPU
+- 32GB RAM
+- 200GB SSD disk
 
 ---
 
