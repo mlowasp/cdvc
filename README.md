@@ -92,9 +92,9 @@ Labels are assigned using **public contextual information**, such as news report
 
 ## Dataset Composition
 
-- **Controlled demolitions:** 30 videos  
-- **Uncontrolled collapses:** 60 videos  
-- **Total videos:** 90  
+- **Controlled demolitions:** 32 videos  
+- **Uncontrolled collapses:** 62 videos  
+- **Total videos:** 94
 
 Videos vary in:
 - duration
