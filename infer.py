@@ -2,7 +2,7 @@ import sys
 import yaml
 import torch
 
-from dataset_safe import SafeVideoDataset
+from dataset_safe import SingleVideoInfer
 from model import CNNLSTMVideoClassifier
 from utils import load_checkpoint
 
@@ -13,56 +13,77 @@ def infer_video(video_path: str, ckpt_path: str, config_path: str = "config.yaml
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
 
     ckpt = load_checkpoint(ckpt_path, device=device)
+    state = ckpt["model"]
+
+    # ------------------------------------------------------------
+    # 🔒 DERIVE ARCHITECTURE FROM CHECKPOINT (IMPOSSIBLE TO MISMATCH)
+    # ------------------------------------------------------------
+    # lstm.weight_ih_l0 has shape [4*H, input_dim]
+    lstm_w = state["lstm.weight_ih_l0"]
+    lstm_hidden = lstm_w.shape[0] // 4
+
+    # head.weight has shape [1, H]
+    head_hidden = state["head.weight"].shape[1]
+
+    assert lstm_hidden == head_hidden, "Checkpoint is inconsistent!"
+
+    print(f"[infer] Detected LSTM hidden size = {lstm_hidden}")
+
     model = CNNLSTMVideoClassifier(
         encoder_name="resnet18",
         pretrained=False,
-        lstm_hidden=128,
+        lstm_hidden=lstm_hidden,
         lstm_layers=1,
-        dropout=0.4,
-        unfreeze_layer4=True,
+        dropout=0.5,
+        unfreeze_layer4=False,
     ).to(device)
-    model.load_state_dict(ckpt["model"])
+
+    model.load_state_dict(state)
     model.eval()
 
-    # Build a tiny dataset object just for consistent preprocessing
-    tmp = SafeVideoDataset(
-        root_split_dir=".",  # unused
-        class_names=["not_controlled", "controlled"],
+    # ------------------------------------------------------------
+    # Single-video inference helper
+    # ------------------------------------------------------------
+    infer_ds = SingleVideoInfer(
+        video_path=video_path,
         num_frames=int(cfg["video"]["num_frames"]),
-        sampling="random",
         resize_short=int(cfg["video"]["resize_short"]),
         crop_size=int(cfg["video"]["crop_size"]),
         fixed_seed=12345,
     )
-    # hack: replace samples with this one path
-    tmp.samples = [type(tmp.samples[0]) (video_path, 0)] if tmp.samples else [type("S", (), {"path": video_path, "label": 0})]
 
     K = int(cfg["eval"]["clips_per_video"])
-    aggregation = str(cfg["eval"]["aggregation"])
+    aggregation = cfg["eval"].get("aggregation", "mean_prob")
+    threshold = float(cfg["eval"].get("threshold", 0.5))
 
     probs = []
-    logits_list = []
+    logits = []
+
     for i in range(K):
-        frames, _label, _pth = tmp.get_clip(0, clip_key=f"infer_{i}")
+        frames, _, _ = infer_ds.get_clip(clip_key=f"infer_{i}")
         frames = frames.unsqueeze(0).to(device)
+
         logit = model(frames).clamp(-10, 10)[0].item()
-        prob = float(torch.sigmoid(torch.tensor(logit)).item())
+        prob = torch.sigmoid(torch.tensor(logit)).item()
+
+        logits.append(logit)
         probs.append(prob)
-        logits_list.append(logit)
 
     if aggregation == "mean_logit":
-        mlog = sum(logits_list) / max(1, len(logits_list))
-        mprob = float(torch.sigmoid(torch.tensor(mlog)).item())
+        mean_logit = sum(logits) / len(logits)
+        final_prob = torch.sigmoid(torch.tensor(mean_logit)).item()
     else:
-        mprob = sum(probs) / max(1, len(probs))
+        final_prob = sum(probs) / len(probs)
 
-    return mprob
+    pred = "controlled" if final_prob >= threshold else "not_controlled"
+    return final_prob, pred
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python infer.py /path/to/video.mp4 runs/demolition_cls/best.pt")
+        print("Usage: python3 infer.py /path/video.mp4 runs/demolition_cls/best.pt")
         sys.exit(1)
 
-    prob = infer_video(sys.argv[1], sys.argv[2], "config.yaml")
-    print(f"controlled_demolition_probability={prob:.4f}")
+    prob, pred = infer_video(sys.argv[1], sys.argv[2], "config.yaml")
+    print(f"prediction: {pred}")
+    print(f"controlled_demolition_probability: {prob:.4f}")

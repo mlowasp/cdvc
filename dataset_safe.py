@@ -170,3 +170,37 @@ class SafeVideoDataset(Dataset):
     def __getitem__(self, idx: int):
         # training: each access yields one random clip
         return self.get_clip(idx, clip_key=str(random.random()))
+
+class SingleVideoInfer:
+    """
+    Lightweight wrapper for inference on a single video path.
+    Reuses SafeVideoDataset logic without directory scanning.
+    """
+    def __init__(
+        self,
+        video_path: str,
+        num_frames: int,
+        resize_short: int,
+        crop_size: int,
+        fixed_seed: int = 12345,
+    ):
+        self.video_path = video_path
+        self.num_frames = num_frames
+        self.resize_short = resize_short
+        self.crop_size = crop_size
+        self.fixed_seed = fixed_seed
+
+        # dummy sample to reuse methods
+        self._ds = SafeVideoDataset.__new__(SafeVideoDataset)
+        self._ds.num_frames = num_frames
+        self._ds.resize_short = resize_short
+        self._ds.crop_size = crop_size
+        self._ds.sampling = "random"
+        self._ds.fixed_seed = fixed_seed
+
+    def get_clip(self, clip_key: str):
+        # manually fake a sample entry
+        sample = type("S", (), {"path": self.video_path, "label": 0})
+        self._ds.samples = [sample]
+
+        return SafeVideoDataset.get_clip(self._ds, 0, clip_key)
