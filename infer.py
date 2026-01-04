@@ -85,5 +85,5 @@ if __name__ == "__main__":
         sys.exit(1)
 
     prob, pred = infer_video(sys.argv[1], sys.argv[2], "config.yaml")
-    print(f"prediction: {pred}")
+    print(f"prediction: {pred} demolition")
     print(f"controlled_demolition_probability: {prob:.4f}")
