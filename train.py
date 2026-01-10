@@ -8,8 +8,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataset_safe import SafeVideoDataset, compute_pos_weight
-from model import CNNLSTMVideoClassifier
+from dataset_safe import SafeVideoDatasetTwoStream, compute_pos_weight
+from model_twostream_i3d import TwoStreamI3D
 from losses import BinaryFocalLoss
 from utils import seed_everything, ensure_dir, AverageMeter, compute_metrics_from_preds, save_checkpoint, load_checkpoint
 
@@ -46,7 +46,7 @@ def build_scheduler(optimizer, cfg: Dict, steps_per_epoch: int):
 @torch.no_grad()
 def eval_per_video_aggregation(
     model: nn.Module,
-    ds: SafeVideoDataset,
+    ds: SafeVideoDatasetTwoStream,
     device: str,
     clips_per_video: int,
     aggregation: str,
@@ -54,12 +54,8 @@ def eval_per_video_aggregation(
     batch_size: int,
     num_workers: int,
 ):
-    """
-    Runs K clips per video, aggregates per-video, computes metrics per video.
-    """
     model.eval()
 
-    # We'll build an index list of (video_idx, clip_id) pairs
     pairs: List[Tuple[int, int]] = []
     for vidx in range(len(ds)):
         for c in range(clips_per_video):
@@ -75,8 +71,8 @@ def eval_per_video_aggregation(
 
         def __getitem__(self, i):
             vidx, cid = self.pairs[i]
-            frames, label, path = self.base.get_clip(vidx, clip_key=f"eval_{cid}")
-            return frames, label, path
+            rgb, flow, label, path = self.base.get_clip(vidx, clip_key=f"eval_{cid}")
+            return rgb, flow, label, path
 
     pair_ds = PairDataset(ds, pairs)
     loader = DataLoader(
@@ -90,15 +86,13 @@ def eval_per_video_aggregation(
         drop_last=False,
     )
 
-    # Collect per-video clip outputs
-    # maps path -> list of probs/logits, label
     by_path = {}
-
-    for frames, labels, paths in loader:
-        frames = frames.to(device, non_blocking=True)
+    for rgb, flow, labels, paths in loader:
+        rgb = rgb.to(device, non_blocking=True)
+        flow = flow.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True).float()
 
-        logits = model(frames).clamp(-10, 10)
+        logits = model(rgb, flow).clamp(-10, 10)
         probs = torch.sigmoid(logits)
 
         for pth, prob, logit, lab in zip(paths, probs.detach().cpu(), logits.detach().cpu(), labels.detach().cpu()):
@@ -108,16 +102,13 @@ def eval_per_video_aggregation(
             by_path[pth]["probs"].append(float(prob.item()))
             by_path[pth]["logits"].append(float(logit.item()))
 
-    # Aggregate per video
     agg_probs = []
     agg_labels = []
-
     for pth, rec in by_path.items():
         if aggregation == "mean_logit":
             mlog = sum(rec["logits"]) / max(1, len(rec["logits"]))
             mprob = float(torch.sigmoid(torch.tensor(mlog)).item())
         else:
-            # mean_prob
             mprob = sum(rec["probs"]) / max(1, len(rec["probs"]))
         agg_probs.append(mprob)
         agg_labels.append(rec["label"])
@@ -128,7 +119,7 @@ def eval_per_video_aggregation(
 
     metrics = compute_metrics_from_preds(agg_preds_t, agg_labels_t)
 
-    # also return averaged loss-ish for debugging (use BCE for reporting only)
+    # reporting loss only
     bce = torch.nn.BCELoss()
     rep_loss = float(bce(agg_probs_t.clamp(1e-6, 1-1e-6), agg_labels_t.float()).item())
 
@@ -149,7 +140,9 @@ def main(config_path: str = "config.yaml"):
     val_dir = os.path.join(root, cfg["data"]["val_split"])
     class_names = cfg["data"]["class_names"]
 
-    ds_train = SafeVideoDataset(
+    flow_cfg = cfg.get("flow", {})
+
+    ds_train = SafeVideoDatasetTwoStream(
         root_split_dir=train_dir,
         class_names=class_names,
         num_frames=int(cfg["video"]["num_frames"]),
@@ -157,29 +150,37 @@ def main(config_path: str = "config.yaml"):
         resize_short=int(cfg["video"]["resize_short"]),
         crop_size=int(cfg["video"]["crop_size"]),
         fixed_seed=None,
+        flow_cfg=flow_cfg,
     )
 
-    ds_val = SafeVideoDataset(
+    ds_val = SafeVideoDatasetTwoStream(
         root_split_dir=val_dir,
         class_names=class_names,
         num_frames=int(cfg["video"]["num_frames"]),
-        sampling="random",  # we'll control deterministic clips via get_clip keys
+        sampling="random",
         resize_short=int(cfg["video"]["resize_short"]),
         crop_size=int(cfg["video"]["crop_size"]),
-        fixed_seed=12345,   # makes eval repeatable
+        fixed_seed=12345,
+        flow_cfg=flow_cfg,
     )
 
     pw = compute_pos_weight(ds_train.samples)
     print(f"[imbalance] Using pos_weight={pw:.4f} (neg/pos)")
 
-    model = CNNLSTMVideoClassifier(
-        encoder_name="resnet18",
-        pretrained=True,
-        lstm_hidden=64,        # ↓ reduce temporal capacity
-        lstm_layers=1,
-        dropout=0.5,           # ↑ stronger regularization
-        unfreeze_layer4=False, # ❗ freeze CNN completely
+    model = TwoStreamI3D(
+        rgb_weights_path=str(cfg["model"]["rgb_weights"]),
+        fusion=str(cfg["model"]["fusion"]),
+        fusion_alpha=float(cfg["model"].get("fusion_alpha", 0.5)),
     ).to(device)
+
+    # freeze/unfreeze scheduling
+    freeze_epochs = int(cfg["model"].get("freeze_backbones_epochs", 0))
+    unfreeze_rgb = bool(cfg["model"].get("unfreeze_rgb", True))
+    unfreeze_flow = bool(cfg["model"].get("unfreeze_flow", True))
+
+    # start frozen if requested
+    if freeze_epochs > 0:
+        model.set_backbone_trainable(False, False)
 
     criterion = BinaryFocalLoss(
         alpha=float(cfg["focal_loss"]["alpha"]),
@@ -206,7 +207,6 @@ def main(config_path: str = "config.yaml"):
     cfg["scheduler"]["_total_epochs"] = int(cfg["train"]["epochs"])
     scheduler = build_scheduler(optimizer, cfg["scheduler"], steps_per_epoch=len(train_loader))
 
-    # AMP (updated API)
     scaler = torch.amp.GradScaler("cuda", enabled=bool(cfg["train"].get("amp", True)))
 
     start_epoch = 0
@@ -228,21 +228,32 @@ def main(config_path: str = "config.yaml"):
     log_every = int(cfg["train"]["log_every"])
     grad_clip = float(cfg["train"]["grad_clip"])
 
-    global_step = 0
     for epoch in range(start_epoch, int(cfg["train"]["epochs"])):
+
+        # Unfreeze after N epochs
+        if freeze_epochs > 0 and epoch == freeze_epochs:
+            model.set_backbone_trainable(unfreeze_rgb, unfreeze_flow)
+            optimizer = torch.optim.AdamW(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=float(cfg["train"]["lr"]) * 0.5,      # safer after unfreeze
+                weight_decay=float(cfg["train"]["weight_decay"]),
+            )
+            scheduler = build_scheduler(optimizer, cfg["scheduler"], steps_per_epoch=len(train_loader))
+            print(f"[train] Unfroze backbones at epoch {epoch+1}")
+
         model.train()
         loss_meter = AverageMeter()
-
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg['train']['epochs']}", dynamic_ncols=True)
 
-        for step, (frames, labels, _paths) in enumerate(pbar):
-            frames = frames.to(device, non_blocking=True)
+        for step, (rgb, flow, labels, _paths) in enumerate(pbar):
+            rgb = rgb.to(device, non_blocking=True)
+            flow = flow.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True).float()
 
             optimizer.zero_grad(set_to_none=True)
 
             with torch.amp.autocast("cuda", enabled=bool(cfg["train"].get("amp", True))):
-                logits = model(frames).clamp(-10, 10)
+                logits = model(rgb, flow).clamp(-10, 10)
                 loss = criterion(logits, labels)
 
             scaler.scale(loss).backward()
@@ -258,13 +269,11 @@ def main(config_path: str = "config.yaml"):
                 scheduler.step()
 
             loss_meter.update(loss.item(), n=int(labels.size(0)))
-            global_step += 1
 
             if (step + 1) % log_every == 0:
                 lr = optimizer.param_groups[0]["lr"]
                 pbar.set_postfix({"loss": f"{loss_meter.avg:.4f}", "lr": f"{lr:.2e}"})
 
-        # Per-video aggregated validation
         val_loss, val_metrics = eval_per_video_aggregation(
             model=model,
             ds=ds_val,
@@ -272,7 +281,7 @@ def main(config_path: str = "config.yaml"):
             clips_per_video=int(cfg["eval"]["clips_per_video"]),
             aggregation=str(cfg["eval"]["aggregation"]),
             threshold=float(cfg["eval"]["threshold"]),
-            batch_size=min(32, int(cfg["train"]["batch_size"]) * 2),
+            batch_size=max(2, int(cfg["train"]["batch_size"]) * 2),
             num_workers=min(8, int(cfg["num_workers"])),
         )
 

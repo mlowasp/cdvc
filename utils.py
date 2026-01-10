@@ -20,7 +20,7 @@ class AverageMeter:
 
     def update(self, val: float, n: int = 1):
         self.sum += float(val) * n
-        self.count += n
+        self.count += int(n)
 
     @property
     def avg(self) -> float:
@@ -41,10 +41,6 @@ def load_checkpoint(path: str, device: str = "cpu") -> Dict:
 
 @torch.no_grad()
 def compute_metrics_from_preds(preds: torch.Tensor, labels: torch.Tensor) -> Dict[str, float]:
-    """
-    preds: LongTensor [N] (0/1)
-    labels: LongTensor [N] (0/1)
-    """
     preds = preds.long()
     labels = labels.long()
 

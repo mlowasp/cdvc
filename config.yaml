@@ -1,7 +1,5 @@
 seed: 1337
 device: "cuda"
-
-# Data loading
 num_workers: 6
 
 data:
@@ -10,39 +8,55 @@ data:
   val_split: "val"
   class_names: ["not_controlled", "controlled"]
 
-# Video preprocessing
 video:
-  num_frames: 48            # sweet spot for this dataset size
-  sampling_train: "random"  # random contiguous clip per access
+  num_frames: 64
+  sampling_train: "random"     # random contiguous window each access
   resize_short: 256
   crop_size: 224
 
-# Training
+flow:
+  method: "farneback"          # farneback (no extra deps)
+  # Farneback params (safe defaults)
+  pyr_scale: 0.5
+  levels: 3
+  winsize: 15
+  iterations: 3
+  poly_n: 5
+  poly_sigma: 1.2
+  flags: 0
+  clip_value: 20.0            # clip flow magnitude per component [-clip, +clip]
+  normalize: "clip"           # clip -> scale to [-1,1]
+
+model:
+  rgb_weights: "weights/rgb_imagenet.pt"
+  fusion: "mean_logit"         # mean_logit | weighted_logit
+  fusion_alpha: 0.5            # only for weighted_logit (alpha*rgb + (1-alpha)*flow)
+  freeze_backbones_epochs: 3   # freeze both streams for first N epochs (recommended)
+  unfreeze_rgb: true
+  unfreeze_flow: true
+
 train:
-  epochs: 30                # more epochs, but small capacity
-  batch_size: 4             # stable gradients, avoids overfitting
-  lr: 0.003                 # slightly higher to escape trivial minima
+  epochs: 20
+  batch_size: 2
+  lr: 0.0003
   weight_decay: 0.02
   grad_clip: 1.0
   amp: true
   log_every: 10
-  save_dir: "runs/demolition_cls"
+  save_dir: "runs/demolition_cls_twostream"
   resume: null
 
-# Loss (Focal Loss)
 focal_loss:
-  alpha: 0.75               # bias toward controlled demolitions
-  gamma: 2.0                # standard focal setting
+  alpha: 0.75
+  gamma: 2.0
 
-# Validation / per-video aggregation
 eval:
-  clips_per_video: 8        # strong signal without over-smoothing
-  aggregation: "mean_prob"  # more stable than logits at this scale
-  threshold: 0.5            # can tune later (0.45–0.55)
+  clips_per_video: 5
+  aggregation: "mean_prob"     # mean_prob | mean_logit
+  threshold: 0.5
 
-# LR Scheduler
 scheduler:
   name: "cosine"
   warmup_epochs: 1
-  step_size: 8              # unused by cosine, safe to keep
+  step_size: 8
   gamma: 0.1
