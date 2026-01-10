@@ -79,11 +79,23 @@ class TwoStreamI3D(nn.Module):
         return 0.5 * (rgb_out + flow_out)
 
     def set_backbone_trainable(self, rgb_trainable: bool, flow_trainable: bool):
-        for p in self.rgb.parameters():
-            p.requires_grad = bool(rgb_trainable)
-        for p in self.flow.parameters():
-            p.requires_grad = bool(flow_trainable)
+        """
+        Freeze/unfreeze backbone feature extractors while
+        keeping classification heads trainable.
+        """
 
-        # keep heads trainable regardless
-        # (replace_logits creates logits layer; name differs per impl, but requires_grad will already be set)
-        return
+        def _is_logit_param(name: str) -> bool:
+            # I3D replace_logits creates layers with 'logits' in name
+            return "logits" in name or "logit" in name
+
+        for name, p in self.rgb.named_parameters():
+            if _is_logit_param(name):
+                p.requires_grad = True
+            else:
+                p.requires_grad = bool(rgb_trainable)
+
+        for name, p in self.flow.named_parameters():
+            if _is_logit_param(name):
+                p.requires_grad = True
+            else:
+                p.requires_grad = bool(flow_trainable)

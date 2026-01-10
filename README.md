@@ -1,73 +1,67 @@
-# Controlled Demolition Video Classifier
+# Two-Stream I3D for Controlled Building Demolition Detection
 
-A **PyTorch-based video classification pipeline** that detects whether a video depicts a **controlled building demolition** (implosion) or **not** (fire collapse, earthquake, accident, partial failure, CGI, etc.).
-
-The model uses a **CNN + LSTM temporal architecture**:
-- A **2D CNN** (ResNet) encodes individual frames
-- An **LSTM** models temporal collapse dynamics
-- The output is a **binary probability** indicating controlled demolition
-
-This repository is designed to be:
-- 🔁 **Reproducible** (config-driven)
-- 🚀 **GPU-ready** (AMP, checkpointing)
-- 🧱 **Extendable** (optical flow, audio, transformers)
-- ⚖️ **Robust to class imbalance**
+**Author:** Maxime Labelle  
+**Contact:** maxime.labelle@owasp.org  
+**License:** MIT  
 
 ---
 
-## Problem Definition
+## Overview
 
-**Binary classification**
+This repository contains a **two-stream I3D (Inflated 3D ConvNet)** implementation for **binary classification of building demolition videos**:
 
-| Label | Meaning |
-|------|--------|
-| `1` | Controlled demolition (engineered implosion) |
-| `0` | Not controlled (fire, earthquake, accidental failure, CGI, etc.) |
+- **Controlled demolition**
+- **Uncontrolled / accidental collapse**
 
-The classifier learns **temporal collapse patterns**, not just explosions:
-- Vertical symmetry
-- Near-simultaneous structural failure
-- Collapse into footprint
-- Consistent downward velocity
+The model uses:
 
----
+- **RGB stream** (appearance + motion cues)
+- **Optical Flow stream** (explicit motion modeling)
+- **Late fusion** at the logit level
+- **Per-video aggregation** from multiple temporal clips
 
-## Project Structure
-
-```
-.
-├── dataset.py        # Video loading & preprocessing
-├── model.py          # CNN + LSTM architecture
-├── train.py          # Training & validation loop
-├── infer.py          # Single-video inference
-├── utils.py          # Metrics, seeding, checkpoints
-├── config.yaml       # All hyperparameters
-└── README.md
-```
+This setup is designed for **small, high-quality datasets** and prioritizes **robust generalization over raw accuracy**.
 
 ---
 
-## Dataset Layout
+## Model Architecture
 
-Videos must be organized as:
+### Backbone
+- **Inception I3D (Inflated 3D ConvNet)**
+- Based on the DeepMind I3D architecture
+- RGB stream initialized from **ImageNet-inflated I3D weights**
+- Optical Flow stream initialized from RGB weights (first-layer channel adaptation)
+
+### Streams
+| Stream | Input | Purpose |
+|------|------|---------|
+| RGB | 3 × T × H × W | Appearance + implicit motion |
+| Flow | 2 × T × H × W | Explicit motion dynamics |
+
+### Head
+- Binary classification head (1 logit)
+- Fusion strategies:
+  - `mean_logit` (default)
+  - `weighted_logit` (configurable)
+
+---
+
+## Dataset Structure
 
 ```
 dataset/
-  train/
-    controlled/
-      video_001.mp4
-      ...
-    not_controlled/
-      video_101.mp4
-  val/
-    controlled/
-    not_controlled/
-  test/               # optional
-    controlled/
-    not_controlled/
+├── train/
+│   ├── controlled/
+│   └── not_controlled/
+└── val/
+    ├── controlled/
+    └── not_controlled/
 ```
 
+Each folder contains video files (`.mp4`, `.mov`, `.mkv`, etc.).
+
 **Important**
+
 - Split at the **event level** (no clips from the same collapse in both train and val)
 - Negative samples should outnumber positives (2–3× recommended)
 
@@ -80,36 +74,6 @@ https://huggingface.co/datasets/mlowasp/controlled-demolition-classification
 https://mega.nz/file/7IlxGYrB#qZ6tLZye605grlNBt1F0qLl3I1UIHoM0QtLQkopERLk
 
 https://drive.google.com/file/d/1ZxGlJQUZJFscW9T0liSOGVWqtDCTVFZg/view?usp=sharing
-
-## Labels
-
-| Label | Description |
-|------|------------|
-| `controlled` | Engineered, planned building demolition (implosion or sequenced collapse) |
-| `not_controlled` | Unplanned structural collapse (e.g. fire-induced failure, accidental collapse, partial failure) |
-
-Labels are assigned using **public contextual information**, such as news reporting, official demolition footage, or clearly documented demolition events.
-
----
-
-## Dataset Composition
-
-- **Controlled demolitions:** 32 videos  
-- **Uncontrolled collapses:** 62 videos  
-- **Total videos:** 94
-
-Videos vary in:
-- duration
-- resolution
-- camera angle
-- environmental conditions
-- collapse dynamics
-
-This diversity is intentional and reflects realistic conditions for video classification models.
-
-## Dataset training results
-
-“On a held-out validation set of 30 videos (10 controlled, 20 uncontrolled), the baseline model achieves F1 scores in the range of 0.83–0.95 depending on epoch and threshold, indicating strong separability but limited by dataset size.”
 
 ---
 
@@ -134,84 +98,113 @@ sudo apt install ffmpeg
 
 ---
 
-## Configuration
+## Training Configuration
 
-All parameters live in **`config.yaml`**.
+### Input Parameters
+- Frames per clip: **64**
+- Resolution: **224 × 224**
+- Sampling: random contiguous clips
+- Normalization:
+  - RGB: `[0,1] → [-1,1]`
+  - Flow: clipped and normalized to `[-1,1]`
 
-Key sections:
-- `video`: frame sampling, resolution
-- `model`: encoder & LSTM size
-- `train`: optimizer, AMP, batch size
-- `imbalance`: class weighting
-- `scheduler`: LR schedule
+### Loss
+- **Binary Focal Loss**
+  - `alpha = 0.75`
+  - `gamma = 2.0`
+
+### Optimization
+- Optimizer: **AdamW**
+- Learning rate: **3e-4**
+- Weight decay: **0.02**
+- Automatic Mixed Precision (AMP): **enabled**
+- Gradient clipping: **1.0**
+
+### Training Strategy
+- Backbone frozen for first few epochs
+- Gradual unfreezing for stability
+- Best model selected by **per-video F1 score**
 
 ---
 
-## Training
+## Hardware Used for Training
 
-Start training with:
+The baseline model was trained on the following hardware:
 
-```bash
-python train.py
-```
+| Component | Specification |
+|--------|---------------|
+| GPU | NVIDIA A40 (48 GB VRAM) |
+| GPUs | 1 |
+| CPU | 12 vCPUs |
+| System RAM | 32 GB |
+| Precision | FP16 (AMP) |
 
-Checkpoints are written to:
+---
 
-```
-runs/demolition_cls/
-  ├── last.pt
-  └── best.pt
-```
+## Evaluation
 
-**F1 score** is used for model selection.
+### Per-Video Aggregation
+
+Each video is evaluated using **K temporal clips**:
+
+- Model predicts a logit per clip
+- Clip predictions are aggregated:
+  - Mean probability (default)
+  - or Mean logit
+
+Final classification is done using a configurable threshold (default `0.5`).
+
+Metrics reported:
+- Accuracy
+- Precision
+- Recall
+- F1-score
 
 ---
 
 ## Inference
 
-Run inference on a single video:
+Single-video inference is supported without directory scanning:
 
 ```bash
-python infer.py /path/to/video.mp4 runs/demolition_cls/last.pt
+python3 infer.py /path/to/video.mp4 runs/demolition_cls_twostream/best.pt
 ```
 
 Output:
 ```
-controlled_demolition_probability=0.93
-```
-
-Training of the latest last.pt and best.py checkpoints have been trained on a custom sized VM:
-
-- NVIDIA RTX A6000 48GB
-- 8 vCPU
-- 32GB RAM
-- 200GB SSD disk
-
----
-
-## Model Architecture
-
-```
-Video
-  ↓
-Frame Sampling
-  ↓
-ResNet (per-frame CNN)
-  ↓
-LSTM (temporal modeling)
-  ↓
-Binary Classifier
+prediction: controlled
+controlled_demolition_probability: 0.92
 ```
 
 ---
 
-## Ethical & Legal Considerations
+## Notes & Limitations
 
-⚠️ Misclassification can fuel misinformation.
-Always output **confidence scores** and use this model for **analysis and research only**.
+- Dataset size is relatively small; results should be interpreted carefully.
+- Optical flow is computed on-the-fly (CPU-bound).
+- For large-scale training, precomputing flow is recommended.
 
 ---
 
 ## License
 
-Provided as-is for research and educational use.
+This project is released under the **MIT License**.
+
+---
+
+## Citation
+
+If you use this work in research or production, please cite:
+
+```
+Two-Stream I3D for Controlled Building Demolition Detection
+Maxime Labelle, 2026
+```
+
+---
+
+## Acknowledgements
+
+- DeepMind I3D architecture
+- PyTorch implementation adapted from `piergiaj/pytorch-i3d`
+- OpenCV for optical flow computation
