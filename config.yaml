@@ -53,7 +53,7 @@ focal_loss:
 eval:
   clips_per_video: 5
   aggregation: "mean_prob"     # mean_prob | mean_logit
-  threshold: 0.5
+  threshold: 0.2
 
 scheduler:
   name: "cosine"
