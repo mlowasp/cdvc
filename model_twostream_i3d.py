@@ -59,13 +59,29 @@ class TwoStreamI3D(nn.Module):
         self.flow.replace_logits(1)
 
     def _reduce_logits(self, out: torch.Tensor) -> torch.Tensor:
-        # out often [B,1,t,1,1]
+        """
+        Reduce I3D output to a single scalar logit per sample.
+        Accepts shapes:
+        [B, C]
+        [B, C, T]
+        [B, C, T, 1, 1]
+        Returns:
+        [B]
+        """
+        # Remove spatial dims if present
         if out.dim() == 5:
-            out = out.mean(dim=2)
-            out = out.squeeze(-1).squeeze(-1).squeeze(1)
-        else:
-            out = out.squeeze(1)
-        return out
+            out = out.squeeze(-1).squeeze(-1)  # [B, C, T]
+
+        # Average over temporal dimension if present
+        if out.dim() == 3:
+            out = out.mean(dim=2)  # [B, C]
+
+        # If still multi-channel, average channels
+        if out.dim() == 2 and out.size(1) > 1:
+            out = out.mean(dim=1)  # [B]
+
+        # Final safety squeeze
+        return out.view(-1)
 
     def forward(self, rgb: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
         rgb_out = self._reduce_logits(self.rgb(rgb))
@@ -75,7 +91,6 @@ class TwoStreamI3D(nn.Module):
             a = self.fusion_alpha
             return a * rgb_out + (1.0 - a) * flow_out
 
-        # default: mean_logit
         return 0.5 * (rgb_out + flow_out)
 
     def set_backbone_trainable(self, rgb_trainable: bool, flow_trainable: bool):
